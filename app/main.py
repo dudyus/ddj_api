@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -947,6 +948,41 @@ def resultado_aposta_multipla(multipla_id: int, dados: ResultadoApostaMultipla):
         "banca": _serializar_banca(banca),
         "flags": _status_banca(banca),
     }
+
+
+# =========================================================
+# ADMIN
+# =========================================================
+
+@app.delete("/admin/limpar-dados")
+def limpar_dados(usuario_id: Optional[int] = None):
+    """
+    Remove bancas, apostas (simples e múltiplas) e histórico.
+    Com usuario_id: apaga apenas dados daquele usuário.
+    Sem usuario_id: apaga tudo (todos os usuários).
+    Usuários NÃO são apagados.
+    """
+    db = SessionLocal()
+
+    if usuario_id is not None:
+        bancas_ids = [b.id for b in db.query(Banca).filter(Banca.usuario_id == usuario_id).all()]
+        apostas_ids = [a.id for a in db.query(Aposta).filter(Aposta.banca_id.in_(bancas_ids)).all()]
+        multiplas_ids = [m.id for m in db.query(ApostaMultipla).filter(ApostaMultipla.banca_id.in_(bancas_ids)).all()]
+
+        db.query(HistoricoBanca).filter(HistoricoBanca.usuario_id == usuario_id).delete(synchronize_session=False)
+        db.query(ItemApostaMultipla).filter(ItemApostaMultipla.multipla_id.in_(multiplas_ids)).delete(synchronize_session=False)
+        db.query(ApostaMultipla).filter(ApostaMultipla.banca_id.in_(bancas_ids)).delete(synchronize_session=False)
+        db.query(Aposta).filter(Aposta.banca_id.in_(bancas_ids)).delete(synchronize_session=False)
+        db.query(Banca).filter(Banca.usuario_id == usuario_id).delete(synchronize_session=False)
+    else:
+        db.query(HistoricoBanca).delete(synchronize_session=False)
+        db.query(ItemApostaMultipla).delete(synchronize_session=False)
+        db.query(ApostaMultipla).delete(synchronize_session=False)
+        db.query(Aposta).delete(synchronize_session=False)
+        db.query(Banca).delete(synchronize_session=False)
+
+    db.commit()
+    return {"mensagem": "Dados removidos com sucesso"}
 
 
 # =========================================================
