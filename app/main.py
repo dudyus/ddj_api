@@ -27,6 +27,7 @@ from app.models.enums import (
 from app.schemas.banca import CriarBanca, EditarBanca, MovimentarBanca
 from app.schemas.aposta import CriarAposta, ResultadoAposta
 from app.schemas.aposta_multipla import CriarApostaMultipla, ResultadoApostaMultipla
+from app.schemas.usuario import EditarNome, EditarEmail, AlterarSenha
 
 from app.services.football_data_service import buscar_partidas
 from app.services.importar_partidas_service import importar_partidas
@@ -129,6 +130,110 @@ def login(dados: Login):
             )
         }
     }
+
+
+# =========================================================
+# USUARIO — edição e exclusão
+# =========================================================
+
+@app.patch("/usuario/{usuario_id}/nome")
+def editar_nome(usuario_id: int, dados: EditarNome):
+    db = SessionLocal()
+    usuario = db.get(Usuario, usuario_id)
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    novo = dados.novo_nome.strip()
+    if not novo:
+        raise HTTPException(status_code=400, detail="Nome não pode ser vazio")
+    usuario.nome = novo
+    db.commit()
+    db.refresh(usuario)
+    return {
+        "id": usuario.id,
+        "nome": usuario.nome,
+        "email": usuario.email,
+        "perfil_risco": usuario.perfil_risco.value if usuario.perfil_risco else None,
+    }
+
+
+@app.patch("/usuario/{usuario_id}/email")
+def editar_email(usuario_id: int, dados: EditarEmail):
+    db = SessionLocal()
+    usuario = db.get(Usuario, usuario_id)
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    novo = dados.novo_email.strip().lower()
+    if not novo:
+        raise HTTPException(status_code=400, detail="Email não pode ser vazio")
+    existente = db.query(Usuario).filter(
+        Usuario.email == novo,
+        Usuario.id != usuario_id
+    ).first()
+    if existente:
+        raise HTTPException(status_code=400, detail="E-mail já está em uso")
+    usuario.email = novo
+    db.commit()
+    db.refresh(usuario)
+    return {
+        "id": usuario.id,
+        "nome": usuario.nome,
+        "email": usuario.email,
+        "perfil_risco": usuario.perfil_risco.value if usuario.perfil_risco else None,
+    }
+
+
+@app.patch("/usuario/{usuario_id}/senha")
+def alterar_senha(usuario_id: int, dados: AlterarSenha):
+    db = SessionLocal()
+    usuario = db.get(Usuario, usuario_id)
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    if usuario.senha != dados.senha_atual:
+        raise HTTPException(status_code=400, detail="Senha atual incorreta")
+    nova = dados.nova_senha.strip()
+    if len(nova) < 6:
+        raise HTTPException(status_code=400, detail="Nova senha deve ter pelo menos 6 caracteres")
+    usuario.senha = nova
+    db.commit()
+    return {"mensagem": "Senha alterada com sucesso"}
+
+
+@app.delete("/usuario/{usuario_id}")
+def deletar_usuario(usuario_id: int):
+    db = SessionLocal()
+    usuario = db.get(Usuario, usuario_id)
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+    # hard delete em cascata — ordem: dependentes primeiro
+    db.query(HistoricoBanca).filter(HistoricoBanca.usuario_id == usuario_id).delete()
+
+    from app.models.aposta_multipla import ItemApostaMultipla as _Item, ApostaMultipla as _Multi
+    multiplas_ids = [
+        m.id for m in db.query(_Multi).filter(_Multi.usuario_id == usuario_id).all()
+    ]
+    if multiplas_ids:
+        db.query(_Item).filter(_Item.multipla_id.in_(multiplas_ids)).delete()
+    db.query(_Multi).filter(_Multi.usuario_id == usuario_id).delete()
+
+    db.query(Aposta).filter(Aposta.usuario_id == usuario_id).delete()
+    db.query(Banca).filter(Banca.usuario_id == usuario_id).delete()
+
+    from app.models.resposta_usuario import RespostaUsuario as _Resp
+    from app.models.anamnese import Anamnese as _Anam
+    anamneses_ids = [
+        a.id for a in db.query(_Anam).filter(_Anam.usuario_id == usuario_id).all()
+    ]
+    if anamneses_ids:
+        db.query(_Resp).filter(_Resp.anamnese_id.in_(anamneses_ids)).delete()
+    db.query(_Anam).filter(_Anam.usuario_id == usuario_id).delete()
+
+    from app.models.recomendacao import Recomendacao as _Rec
+    db.query(_Rec).filter(_Rec.usuario_id == usuario_id).delete()
+
+    db.delete(usuario)
+    db.commit()
+    return {"mensagem": "Conta excluída com sucesso"}
 
 
 @app.get("/perguntas")
