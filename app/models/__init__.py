@@ -8,6 +8,7 @@ from .odds import Odds
 from .analise import Analise
 from .recomendacao import Recomendacao
 from .aposta import Aposta
+from .aposta_multipla import ApostaMultipla, ItemApostaMultipla
 from .anamnese import Anamnese
 from .pergunta import Pergunta
 from .alternativa import Alternativa

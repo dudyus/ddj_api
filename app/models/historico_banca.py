@@ -22,7 +22,14 @@ class HistoricoBanca(Base):
 
     aposta_id = Column(
         Integer,
-        ForeignKey("aposta.id")
+        ForeignKey("aposta.id"),
+        nullable=True
+    )
+
+    aposta_multipla_id = Column(
+        Integer,
+        ForeignKey("aposta_multipla.id"),
+        nullable=True
     )
 
     usuario_id = Column(
@@ -45,4 +52,5 @@ class HistoricoBanca(Base):
     )
 
     aposta = relationship("Aposta")
+    aposta_multipla = relationship("ApostaMultipla")
     usuario = relationship("Usuario")

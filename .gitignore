@@ -4,3 +4,7 @@ __pycache__/
 .idea/
 .vscode/
 .env
+.claude/
+claude/
+claude_output/
+claude_logs/

@@ -54,3 +54,8 @@ class Banca(Base):
         "Aposta",
         back_populates="banca"
     )
+
+    apostas_multiplas = relationship(
+        "ApostaMultipla",
+        back_populates="banca"
+    )

@@ -21,5 +21,6 @@ class Usuario(Base):
 
     bancas = relationship("Banca", back_populates="usuario")
     apostas = relationship("Aposta", back_populates="usuario")
+    apostas_multiplas = relationship("ApostaMultipla", back_populates="usuario")
     anamneses = relationship("Anamnese", back_populates="usuario")
     recomendacoes = relationship("Recomendacao", back_populates="usuario")
