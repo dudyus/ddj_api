@@ -28,9 +28,12 @@ class Banca(Base):
 
     saldo_inicial = Column(Numeric(12, 2), nullable=False)
     saldo_atual = Column(Numeric(12, 2), nullable=False)
+    saldo_referencia = Column(Numeric(12, 2), nullable=True)
 
-    stop_loss = Column(Numeric(12, 2))
+    # ganho_alvo: quanto o usuário quer ganhar apostando (valor relativo)
+    # stop_loss:  quanto o usuário aceita perder antes de parar (valor relativo)
     meta_diaria = Column(Numeric(12, 2))
+    stop_loss = Column(Numeric(12, 2))
 
     status = Column(
         Enum(StatusBancaEnum),

@@ -20,6 +20,12 @@ class HistoricoBanca(Base):
 
     id = Column(Integer, primary_key=True)
 
+    banca_id = Column(
+        Integer,
+        ForeignKey("banca.id"),
+        nullable=True
+    )
+
     aposta_id = Column(
         Integer,
         ForeignKey("aposta.id"),
@@ -51,6 +57,7 @@ class HistoricoBanca(Base):
         default=datetime.utcnow
     )
 
+    banca = relationship("Banca")
     aposta = relationship("Aposta")
     aposta_multipla = relationship("ApostaMultipla")
     usuario = relationship("Usuario")

@@ -354,11 +354,13 @@ def debug():
 # =========================================================
 
 def _serializar_banca(banca: Banca) -> dict:
+    ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
     return {
         "id": banca.id,
         "usuario_id": banca.usuario_id,
         "saldo_inicial": float(banca.saldo_inicial),
         "saldo_atual": float(banca.saldo_atual),
+        "saldo_referencia": ref,
         "stop_loss": float(banca.stop_loss) if banca.stop_loss is not None else None,
         "meta_diaria": float(banca.meta_diaria) if banca.meta_diaria is not None else None,
         "status": banca.status.value if banca.status else None,
@@ -382,14 +384,15 @@ def _serializar_aposta(aposta: Aposta) -> dict:
 
 
 def _status_banca(banca: Banca) -> dict:
-    """Flags de meta/stop pra decidir se mostra modal no front."""
-    saldo = float(banca.saldo_atual)
-    meta = float(banca.meta_diaria) if banca.meta_diaria is not None else None
-    stop = float(banca.stop_loss) if banca.stop_loss is not None else None
+    """Flags baseadas em performance (saldo_atual - saldo_referencia)."""
+    ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
+    perf = float(banca.saldo_atual) - ref
+    ganho_alvo = float(banca.meta_diaria) if banca.meta_diaria is not None else None
+    perda_limite = float(banca.stop_loss) if banca.stop_loss is not None else None
     return {
-        "atingiu_meta": meta is not None and saldo >= meta,
-        "atingiu_stop": stop is not None and saldo <= stop,
-        "zerada": saldo <= 0,
+        "atingiu_meta": ganho_alvo is not None and perf >= ganho_alvo,
+        "atingiu_stop": perda_limite is not None and perf <= -perda_limite,
+        "zerada": float(banca.saldo_atual) <= 0,
     }
 
 
@@ -441,6 +444,7 @@ def criar_banca(dados: CriarBanca):
         usuario_id=dados.usuario_id,
         saldo_inicial=dados.saldo_inicial,
         saldo_atual=dados.saldo_inicial,
+        saldo_referencia=dados.saldo_inicial,
         stop_loss=dados.stop_loss,
         meta_diaria=dados.meta_diaria,
         status=StatusBancaEnum.ATIVA,
@@ -477,6 +481,64 @@ def editar_banca(banca_id: int, dados: EditarBanca):
     return {"banca": _serializar_banca(banca), "flags": _status_banca(banca)}
 
 
+@app.post("/banca/{banca_id}/depositar")
+def depositar_banca(banca_id: int, dados: MovimentarBanca):
+    db = SessionLocal()
+    banca = db.get(Banca, banca_id)
+    if not banca:
+        raise HTTPException(status_code=404, detail="Banca não encontrada")
+    if banca.status != StatusBancaEnum.ATIVA:
+        raise HTTPException(status_code=400, detail="Banca não está ativa")
+    if dados.valor <= 0:
+        raise HTTPException(status_code=400, detail="Valor deve ser maior que 0")
+
+    banca.saldo_atual = float(banca.saldo_atual) + dados.valor
+    banca.saldo_referencia = float(banca.saldo_atual)  # redefine baseline de performance
+    db.commit()
+    db.refresh(banca)
+
+    db.add(HistoricoBanca(
+        banca_id=banca_id,
+        usuario_id=banca.usuario_id,
+        saldo=banca.saldo_atual,
+        valor=dados.valor,
+        tipo_movimentacao=TipoMovimentacaoEnum.DEPOSITO,
+    ))
+    db.commit()
+
+    return {"banca": _serializar_banca(banca)}
+
+
+@app.post("/banca/{banca_id}/sacar")
+def sacar_banca(banca_id: int, dados: MovimentarBanca):
+    db = SessionLocal()
+    banca = db.get(Banca, banca_id)
+    if not banca:
+        raise HTTPException(status_code=404, detail="Banca não encontrada")
+    if banca.status != StatusBancaEnum.ATIVA:
+        raise HTTPException(status_code=400, detail="Banca não está ativa")
+    if dados.valor <= 0:
+        raise HTTPException(status_code=400, detail="Valor deve ser maior que 0")
+    if dados.valor > float(banca.saldo_atual):
+        raise HTTPException(status_code=400, detail="Saldo insuficiente para saque")
+
+    banca.saldo_atual = float(banca.saldo_atual) - dados.valor
+    banca.saldo_referencia = float(banca.saldo_atual)  # redefine baseline de performance
+    db.commit()
+    db.refresh(banca)
+
+    db.add(HistoricoBanca(
+        banca_id=banca_id,
+        usuario_id=banca.usuario_id,
+        saldo=banca.saldo_atual,
+        valor=dados.valor,
+        tipo_movimentacao=TipoMovimentacaoEnum.SAQUE,
+    ))
+    db.commit()
+
+    return {"banca": _serializar_banca(banca)}
+
+
 @app.post("/banca/{banca_id}/fechar")
 def fechar_banca(banca_id: int):
     db = SessionLocal()
@@ -509,9 +571,11 @@ def historico_bancas(usuario_id: int):
         ganhas = sum(1 for a in apostas if a.resultado == ResultadoApostaEnum.GANHA)
         perdidas = sum(1 for a in apostas if a.resultado == ResultadoApostaEnum.PERDIDA)
 
-        if float(banca.saldo_atual) >= float(banca.meta_diaria or 0) and banca.meta_diaria:
+        ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
+        perf = float(banca.saldo_atual) - ref
+        if banca.meta_diaria is not None and perf >= float(banca.meta_diaria):
             resultado_final = "Green"
-        elif banca.stop_loss is not None and float(banca.saldo_atual) <= float(banca.stop_loss):
+        elif banca.stop_loss is not None and perf <= -float(banca.stop_loss):
             resultado_final = "Red"
         else:
             resultado_final = "Fechada"
@@ -558,6 +622,9 @@ def criar_aposta(dados: CriarAposta):
 
     # reserva o valor da aposta da banca (entrada)
     banca.saldo_atual = float(banca.saldo_atual) - dados.valor
+    # ajusta referência para que aposta pendente não impacte performance
+    ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
+    banca.saldo_referencia = ref - dados.valor
 
     db.commit()
     db.refresh(aposta)
@@ -599,26 +666,34 @@ def resultado_aposta(aposta_id: int, dados: ResultadoAposta):
     valor = float(aposta.valor)
     odd = float(aposta.odd)
 
-    # reverte efeito anterior (a entrada já foi descontada na criação;
-    # GANHA/CANCELADA podem ter creditado retorno antes)
+    # reverte efeito anterior (saldo_atual e saldo_referencia do resultado anterior)
+    ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
     if aposta.resultado == ResultadoApostaEnum.GANHA:
         banca.saldo_atual = float(banca.saldo_atual) - valor * odd
+        banca.saldo_referencia = ref - valor
+    elif aposta.resultado == ResultadoApostaEnum.PERDIDA:
+        banca.saldo_referencia = ref - valor
     elif aposta.resultado == ResultadoApostaEnum.CANCELADA:
         banca.saldo_atual = float(banca.saldo_atual) - valor
+        banca.saldo_referencia = ref - valor
+    # PENDENTE: nenhum efeito de resultado anterior a desfazer
 
     # aplica novo resultado
     if novo == ResultadoApostaEnum.GANHA:
         retorno = valor * odd
         banca.saldo_atual = float(banca.saldo_atual) + retorno
+        banca.saldo_referencia = float(banca.saldo_referencia) + valor
         aposta.lucro_prejuizo = retorno - valor
         mov = TipoMovimentacaoEnum.LUCRO
         mov_valor = retorno
     elif novo == ResultadoApostaEnum.PERDIDA:
+        banca.saldo_referencia = float(banca.saldo_referencia) + valor
         aposta.lucro_prejuizo = -valor
         mov = TipoMovimentacaoEnum.PREJUIZO
         mov_valor = valor
     elif novo == ResultadoApostaEnum.CANCELADA:
         banca.saldo_atual = float(banca.saldo_atual) + valor
+        banca.saldo_referencia = float(banca.saldo_referencia) + valor
         aposta.lucro_prejuizo = 0
         mov = TipoMovimentacaoEnum.DEPOSITO
         mov_valor = valor
@@ -720,6 +795,8 @@ def criar_aposta_multipla(dados: CriarApostaMultipla):
         ))
 
     banca.saldo_atual = float(banca.saldo_atual) - dados.valor
+    ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
+    banca.saldo_referencia = ref - dados.valor
 
     db.commit()
     db.refresh(multipla)
@@ -766,6 +843,7 @@ def remover_item_multipla(multipla_id: int, item_id: int):
         multipla.resultado = ResultadoApostaEnum.CANCELADA
         multipla.lucro_prejuizo = 0
         banca.saldo_atual = float(banca.saldo_atual) + float(multipla.valor)
+        banca.saldo_referencia = float(banca.saldo_referencia) + float(multipla.valor)
         db.commit()
         db.refresh(multipla)
         db.refresh(banca)
@@ -814,24 +892,33 @@ def resultado_aposta_multipla(multipla_id: int, dados: ResultadoApostaMultipla):
     valor = float(multipla.valor)
     odd = float(multipla.odd_total)
 
-    # reverte efeito anterior se necessário
+    # reverte efeito anterior
+    ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
     if multipla.resultado == ResultadoApostaEnum.GANHA:
         banca.saldo_atual = float(banca.saldo_atual) - valor * odd
+        banca.saldo_referencia = ref - valor
+    elif multipla.resultado == ResultadoApostaEnum.PERDIDA:
+        banca.saldo_referencia = ref - valor
     elif multipla.resultado == ResultadoApostaEnum.CANCELADA:
         banca.saldo_atual = float(banca.saldo_atual) - valor
+        banca.saldo_referencia = ref - valor
+    # PENDENTE: nenhum efeito anterior a desfazer
 
     if novo == ResultadoApostaEnum.GANHA:
         retorno = valor * odd
         banca.saldo_atual = float(banca.saldo_atual) + retorno
+        banca.saldo_referencia = float(banca.saldo_referencia) + valor
         multipla.lucro_prejuizo = retorno - valor
         mov = TipoMovimentacaoEnum.LUCRO
         mov_valor = retorno
     elif novo == ResultadoApostaEnum.PERDIDA:
+        banca.saldo_referencia = float(banca.saldo_referencia) + valor
         multipla.lucro_prejuizo = -valor
         mov = TipoMovimentacaoEnum.PREJUIZO
         mov_valor = valor
     elif novo == ResultadoApostaEnum.CANCELADA:
         banca.saldo_atual = float(banca.saldo_atual) + valor
+        banca.saldo_referencia = float(banca.saldo_referencia) + valor
         multipla.lucro_prejuizo = 0
         mov = TipoMovimentacaoEnum.DEPOSITO
         mov_valor = valor
