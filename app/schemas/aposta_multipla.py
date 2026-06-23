@@ -16,4 +16,4 @@ class CriarApostaMultipla(BaseModel):
 
 
 class ResultadoApostaMultipla(BaseModel):
-    resultado: str  # "GANHA" | "PERDIDA" | "CANCELADA" | "PENDENTE"
+    resultado: str

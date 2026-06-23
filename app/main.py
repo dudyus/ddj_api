@@ -24,6 +24,7 @@ from app.models.enums import (
     StatusBancaEnum,
     ResultadoApostaEnum,
     TipoMovimentacaoEnum,
+    PerfilRiscoEnum,
 )
 from app.schemas.banca import CriarBanca, EditarBanca, MovimentarBanca
 from app.schemas.aposta import CriarAposta, ResultadoAposta
@@ -39,7 +40,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TCC/dev: liberar geral. Em prod, restringir.
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -133,10 +134,6 @@ def login(dados: Login):
     }
 
 
-# =========================================================
-# USUARIO — edição e exclusão
-# =========================================================
-
 @app.patch("/usuario/{usuario_id}/nome")
 def editar_nome(usuario_id: int, dados: EditarNome):
     db = SessionLocal()
@@ -206,7 +203,6 @@ def deletar_usuario(usuario_id: int):
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
 
-    # hard delete em cascata — ordem: dependentes primeiro
     db.query(HistoricoBanca).filter(HistoricoBanca.usuario_id == usuario_id).delete()
 
     from app.models.aposta_multipla import ItemApostaMultipla as _Item, ApostaMultipla as _Multi
@@ -300,6 +296,13 @@ def calcular_resultado_anamnese(anamnese_id: int):
 
     db = SessionLocal()
 
+    anamnese = db.query(Anamnese).filter(
+        Anamnese.id == anamnese_id
+    ).first()
+
+    if not anamnese:
+        raise HTTPException(status_code=404, detail="Anamnese não encontrada")
+
     respostas = db.query(RespostaUsuario).filter(
         RespostaUsuario.anamnese_id == anamnese_id
     ).all()
@@ -315,28 +318,31 @@ def calcular_resultado_anamnese(anamnese_id: int):
         if alternativa:
             total += alternativa.peso
 
-    if total <= 12:
+    if total <= 8:
         perfil = "conservador"
-    elif total <= 20:
+    elif total <= 11:
         perfil = "moderado"
     else:
         perfil = "agressivo"
 
-    anamnese = db.query(Anamnese).filter(
-        Anamnese.id == anamnese_id
-    ).first()
-
-    if not anamnese:
-        raise HTTPException(status_code=404, detail="Anamnese não encontrada")
-
     anamnese.perfil_calculado = perfil
+
+    usuario = db.get(Usuario, anamnese.usuario_id)
+    if usuario:
+        usuario.perfil_risco = PerfilRiscoEnum(perfil.upper())
 
     db.commit()
 
     return {
         "anamnese_id": anamnese_id,
         "score_total": total,
-        "perfil": perfil
+        "perfil": perfil,
+        "usuario": {
+            "id": usuario.id,
+            "nome": usuario.nome,
+            "email": usuario.email,
+            "perfil_risco": usuario.perfil_risco.value if usuario.perfil_risco else None,
+        } if usuario else None,
     }
 
 
@@ -349,10 +355,6 @@ def debug():
         for a in db.query(Anamnese).all()
     ]
 
-
-# =========================================================
-# BANCA
-# =========================================================
 
 def _serializar_banca(banca: Banca) -> dict:
     ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
@@ -385,7 +387,6 @@ def _serializar_aposta(aposta: Aposta) -> dict:
 
 
 def _status_banca(banca: Banca) -> dict:
-    """Flags baseadas em performance (saldo_atual - saldo_referencia)."""
     ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
     perf = float(banca.saldo_atual) - ref
     ganho_alvo = float(banca.meta_diaria) if banca.meta_diaria is not None else None
@@ -432,7 +433,6 @@ def criar_banca(dados: CriarBanca):
     if dados.saldo_inicial <= 0:
         raise HTTPException(status_code=400, detail="Saldo inicial deve ser maior que 0")
 
-    # fecha qualquer banca ativa anterior do usuário
     ativas = db.query(Banca).filter(
         Banca.usuario_id == dados.usuario_id,
         Banca.status == StatusBancaEnum.ATIVA
@@ -494,7 +494,7 @@ def depositar_banca(banca_id: int, dados: MovimentarBanca):
         raise HTTPException(status_code=400, detail="Valor deve ser maior que 0")
 
     banca.saldo_atual = float(banca.saldo_atual) + dados.valor
-    banca.saldo_referencia = float(banca.saldo_atual)  # redefine baseline de performance
+    banca.saldo_referencia = float(banca.saldo_atual)
     db.commit()
     db.refresh(banca)
 
@@ -524,7 +524,7 @@ def sacar_banca(banca_id: int, dados: MovimentarBanca):
         raise HTTPException(status_code=400, detail="Saldo insuficiente para saque")
 
     banca.saldo_atual = float(banca.saldo_atual) - dados.valor
-    banca.saldo_referencia = float(banca.saldo_atual)  # redefine baseline de performance
+    banca.saldo_referencia = float(banca.saldo_atual)
     db.commit()
     db.refresh(banca)
 
@@ -592,10 +592,6 @@ def historico_bancas(usuario_id: int):
     return {"historico": resultado}
 
 
-# =========================================================
-# APOSTA
-# =========================================================
-
 @app.post("/aposta")
 def criar_aposta(dados: CriarAposta):
     db = SessionLocal()
@@ -621,9 +617,7 @@ def criar_aposta(dados: CriarAposta):
     )
     db.add(aposta)
 
-    # reserva o valor da aposta da banca (entrada)
     banca.saldo_atual = float(banca.saldo_atual) - dados.valor
-    # ajusta referência para que aposta pendente não impacte performance
     ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
     banca.saldo_referencia = ref - dados.valor
 
@@ -667,7 +661,6 @@ def resultado_aposta(aposta_id: int, dados: ResultadoAposta):
     valor = float(aposta.valor)
     odd = float(aposta.odd)
 
-    # reverte efeito anterior (saldo_atual e saldo_referencia do resultado anterior)
     ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
     if aposta.resultado == ResultadoApostaEnum.GANHA:
         banca.saldo_atual = float(banca.saldo_atual) - valor * odd
@@ -677,9 +670,7 @@ def resultado_aposta(aposta_id: int, dados: ResultadoAposta):
     elif aposta.resultado == ResultadoApostaEnum.CANCELADA:
         banca.saldo_atual = float(banca.saldo_atual) - valor
         banca.saldo_referencia = ref - valor
-    # PENDENTE: nenhum efeito de resultado anterior a desfazer
 
-    # aplica novo resultado
     if novo == ResultadoApostaEnum.GANHA:
         retorno = valor * odd
         banca.saldo_atual = float(banca.saldo_atual) + retorno
@@ -698,7 +689,7 @@ def resultado_aposta(aposta_id: int, dados: ResultadoAposta):
         aposta.lucro_prejuizo = 0
         mov = TipoMovimentacaoEnum.DEPOSITO
         mov_valor = valor
-    else:  # PENDENTE
+    else:
         aposta.lucro_prejuizo = None
         mov = None
         mov_valor = 0
@@ -724,10 +715,6 @@ def resultado_aposta(aposta_id: int, dados: ResultadoAposta):
         "flags": _status_banca(banca),
     }
 
-
-# =========================================================
-# APOSTA MÚLTIPLA
-# =========================================================
 
 def _serializar_item(item: ItemApostaMultipla) -> dict:
     return {
@@ -839,7 +826,6 @@ def remover_item_multipla(multipla_id: int, item_id: int):
     db.refresh(multipla)
     banca = db.get(Banca, multipla.banca_id)
 
-    # sem itens → cancela automaticamente e devolve o valor
     if len(multipla.itens) == 0:
         multipla.resultado = ResultadoApostaEnum.CANCELADA
         multipla.lucro_prejuizo = 0
@@ -857,7 +843,6 @@ def remover_item_multipla(multipla_id: int, item_id: int):
         ))
         db.commit()
     else:
-        # recalcula odd_total
         nova_odd = 1.0
         for i in multipla.itens:
             nova_odd *= float(i.odd)
@@ -893,7 +878,6 @@ def resultado_aposta_multipla(multipla_id: int, dados: ResultadoApostaMultipla):
     valor = float(multipla.valor)
     odd = float(multipla.odd_total)
 
-    # reverte efeito anterior
     ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
     if multipla.resultado == ResultadoApostaEnum.GANHA:
         banca.saldo_atual = float(banca.saldo_atual) - valor * odd
@@ -903,7 +887,6 @@ def resultado_aposta_multipla(multipla_id: int, dados: ResultadoApostaMultipla):
     elif multipla.resultado == ResultadoApostaEnum.CANCELADA:
         banca.saldo_atual = float(banca.saldo_atual) - valor
         banca.saldo_referencia = ref - valor
-    # PENDENTE: nenhum efeito anterior a desfazer
 
     if novo == ResultadoApostaEnum.GANHA:
         retorno = valor * odd
@@ -923,7 +906,7 @@ def resultado_aposta_multipla(multipla_id: int, dados: ResultadoApostaMultipla):
         multipla.lucro_prejuizo = 0
         mov = TipoMovimentacaoEnum.DEPOSITO
         mov_valor = valor
-    else:  # PENDENTE
+    else:
         multipla.lucro_prejuizo = None
         mov = None
         mov_valor = 0
@@ -950,18 +933,8 @@ def resultado_aposta_multipla(multipla_id: int, dados: ResultadoApostaMultipla):
     }
 
 
-# =========================================================
-# ADMIN
-# =========================================================
-
 @app.delete("/admin/limpar-dados")
 def limpar_dados(usuario_id: Optional[int] = None):
-    """
-    Remove bancas, apostas (simples e múltiplas) e histórico.
-    Com usuario_id: apaga apenas dados daquele usuário.
-    Sem usuario_id: apaga tudo (todos os usuários).
-    Usuários NÃO são apagados.
-    """
     db = SessionLocal()
 
     if usuario_id is not None:
@@ -985,10 +958,6 @@ def limpar_dados(usuario_id: Optional[int] = None):
     return {"mensagem": "Dados removidos com sucesso"}
 
 
-# =========================================================
-# ODDS + PARTIDAS PRÓXIMAS + RECOMENDAÇÃO
-# =========================================================
-
 def _serializar_partida(p: Partida, casa: str, fora: str) -> dict:
     return {
         "id": p.id,
@@ -1001,10 +970,20 @@ def _serializar_partida(p: Partida, casa: str, fora: str) -> dict:
     }
 
 
+def _perfil_risco_usuario(db, usuario_id: Optional[int]) -> Optional[str]:
+    if usuario_id is None:
+        return None
+    usuario = db.get(Usuario, usuario_id)
+    if usuario and usuario.perfil_risco:
+        return usuario.perfil_risco.value
+    return None
+
+
 @app.get("/partidas/proximas")
-def partidas_proximas(limite: int = 10):
-    """Próximas partidas (ainda sem placar) com odds mock e melhor aposta."""
+def partidas_proximas(limite: int = 10, usuario_id: Optional[int] = None):
     db = SessionLocal()
+
+    perfil_risco = _perfil_risco_usuario(db, usuario_id)
 
     partidas = db.query(Partida).filter(
         Partida.gols_casa.is_(None),
@@ -1015,7 +994,7 @@ def partidas_proximas(limite: int = 10):
     for p in partidas:
         casa = db.get(Time, p.time_casa_id)
         fora = db.get(Time, p.time_fora_id)
-        rec = recomendar(db, p)
+        rec = recomendar(db, p, perfil_risco)
         resultado.append({
             **_serializar_partida(
                 p,
@@ -1045,15 +1024,22 @@ def odds_partida(partida_id: int):
             casa.nome if casa else "Casa",
             fora.nome if fora else "Fora",
         ),
-        "odds": buscar_odds(partida_id),
+        "odds": buscar_odds(
+            partida_id,
+            casa.nome if casa else "Casa",
+            fora.nome if fora else "Fora",
+            p.data,
+        ),
     }
 
 
 @app.get("/partidas/{partida_id}/recomendacao")
-def recomendacao_partida(partida_id: int):
+def recomendacao_partida(partida_id: int, usuario_id: Optional[int] = None):
     db = SessionLocal()
     p = db.get(Partida, partida_id)
     if not p:
         raise HTTPException(status_code=404, detail="Partida não encontrada")
 
-    return recomendar(db, p)
+    perfil_risco = _perfil_risco_usuario(db, usuario_id)
+
+    return recomendar(db, p, perfil_risco)

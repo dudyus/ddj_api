@@ -13,5 +13,4 @@ class CriarAposta(BaseModel):
 
 
 class ResultadoAposta(BaseModel):
-    # "GANHA" | "PERDIDA" | "CANCELADA" | "PENDENTE"
     resultado: str

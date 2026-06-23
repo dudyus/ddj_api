@@ -1,20 +1,12 @@
-"""
-Migração: cria tabelas de aposta múltipla e adiciona coluna em historico_banca.
-
-Seguro para rodar múltiplas vezes (idempotente).
-"""
-
 from app.database import Base, engine
-from app.models import *  # garante que todos os models estão registrados no metadata
+from app.models import *
 from sqlalchemy import text
 
 
 def migrar():
-    # 1. Cria tabelas novas (create_all ignora as que já existem)
     Base.metadata.create_all(bind=engine)
     print("OK Tabelas criadas/verificadas")
 
-    # 2. Adiciona coluna aposta_multipla_id em historico_banca (se não existir)
     with engine.connect() as conn:
         resultado = conn.execute(text("""
             SELECT column_name
