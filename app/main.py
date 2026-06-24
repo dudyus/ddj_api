@@ -568,8 +568,18 @@ def historico_bancas(usuario_id: int):
             Aposta.banca_id == banca.id
         ).order_by(Aposta.id.asc()).all()
 
-        ganhas = sum(1 for a in apostas if a.resultado == ResultadoApostaEnum.GANHA)
-        perdidas = sum(1 for a in apostas if a.resultado == ResultadoApostaEnum.PERDIDA)
+        multiplas = db.query(ApostaMultipla).filter(
+            ApostaMultipla.banca_id == banca.id
+        ).order_by(ApostaMultipla.id.asc()).all()
+
+        ganhas = (
+            sum(1 for a in apostas if a.resultado == ResultadoApostaEnum.GANHA)
+            + sum(1 for m in multiplas if m.resultado == ResultadoApostaEnum.GANHA)
+        )
+        perdidas = (
+            sum(1 for a in apostas if a.resultado == ResultadoApostaEnum.PERDIDA)
+            + sum(1 for m in multiplas if m.resultado == ResultadoApostaEnum.PERDIDA)
+        )
 
         ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
         perf = float(banca.saldo_atual) - ref
@@ -586,6 +596,7 @@ def historico_bancas(usuario_id: int):
             "apostas_ganhas": ganhas,
             "apostas_perdidas": perdidas,
             "apostas": [_serializar_aposta(a) for a in apostas],
+            "multiplas": [_serializar_multipla(m) for m in multiplas],
         })
 
     return {"historico": resultado}
@@ -722,7 +733,72 @@ def _serializar_item(item: ItemApostaMultipla) -> dict:
         "partida_id": item.partida_id,
         "tipo_aposta": item.tipo_aposta,
         "odd": float(item.odd),
+        "resultado": item.resultado.value if item.resultado else None,
     }
+
+
+def _derivar_resultado_multipla(itens: list[ItemApostaMultipla]) -> ResultadoApostaEnum:
+    if any(i.resultado == ResultadoApostaEnum.PERDIDA for i in itens):
+        return ResultadoApostaEnum.PERDIDA
+    if itens and all(i.resultado == ResultadoApostaEnum.GANHA for i in itens):
+        return ResultadoApostaEnum.GANHA
+    return ResultadoApostaEnum.PENDENTE
+
+
+def _liquidar_multipla(db, multipla: ApostaMultipla, banca: Banca, novo: ResultadoApostaEnum) -> None:
+    if novo == multipla.resultado:
+        return
+
+    valor = float(multipla.valor)
+    odd = float(multipla.odd_total)
+
+    ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
+    if multipla.resultado == ResultadoApostaEnum.GANHA:
+        banca.saldo_atual = float(banca.saldo_atual) - valor * odd
+        banca.saldo_referencia = ref - valor
+    elif multipla.resultado == ResultadoApostaEnum.PERDIDA:
+        banca.saldo_referencia = ref - valor
+    elif multipla.resultado == ResultadoApostaEnum.CANCELADA:
+        banca.saldo_atual = float(banca.saldo_atual) - valor
+        banca.saldo_referencia = ref - valor
+
+    if novo == ResultadoApostaEnum.GANHA:
+        retorno = valor * odd
+        banca.saldo_atual = float(banca.saldo_atual) + retorno
+        banca.saldo_referencia = float(banca.saldo_referencia) + valor
+        multipla.lucro_prejuizo = retorno - valor
+        mov = TipoMovimentacaoEnum.LUCRO
+        mov_valor = retorno
+    elif novo == ResultadoApostaEnum.PERDIDA:
+        banca.saldo_referencia = float(banca.saldo_referencia) + valor
+        multipla.lucro_prejuizo = -valor
+        mov = TipoMovimentacaoEnum.PREJUIZO
+        mov_valor = valor
+    elif novo == ResultadoApostaEnum.CANCELADA:
+        banca.saldo_atual = float(banca.saldo_atual) + valor
+        banca.saldo_referencia = float(banca.saldo_referencia) + valor
+        multipla.lucro_prejuizo = 0
+        mov = TipoMovimentacaoEnum.DEPOSITO
+        mov_valor = valor
+    else:
+        multipla.lucro_prejuizo = None
+        mov = None
+        mov_valor = 0
+
+    multipla.resultado = novo
+    db.commit()
+    db.refresh(multipla)
+    db.refresh(banca)
+
+    if mov is not None:
+        db.add(HistoricoBanca(
+            aposta_multipla_id=multipla.id,
+            usuario_id=multipla.usuario_id,
+            saldo=banca.saldo_atual,
+            valor=mov_valor,
+            tipo_movimentacao=mov,
+        ))
+        db.commit()
 
 
 def _serializar_multipla(m: ApostaMultipla) -> dict:
@@ -873,57 +949,56 @@ def resultado_aposta_multipla(multipla_id: int, dados: ResultadoApostaMultipla):
         novo = ResultadoApostaEnum(dados.resultado.upper())
     except ValueError:
         raise HTTPException(status_code=400, detail="Resultado inválido")
+    if novo != ResultadoApostaEnum.CANCELADA:
+        raise HTTPException(
+            status_code=400,
+            detail="Ganha/Perdida são definidos automaticamente pelo resultado das seleções",
+        )
+    if multipla.resultado != ResultadoApostaEnum.PENDENTE:
+        raise HTTPException(status_code=400, detail="Só é possível cancelar múltiplas pendentes")
 
-    valor = float(multipla.valor)
-    odd = float(multipla.odd_total)
-
-    ref = float(banca.saldo_referencia) if banca.saldo_referencia is not None else float(banca.saldo_inicial)
-    if multipla.resultado == ResultadoApostaEnum.GANHA:
-        banca.saldo_atual = float(banca.saldo_atual) - valor * odd
-        banca.saldo_referencia = ref - valor
-    elif multipla.resultado == ResultadoApostaEnum.PERDIDA:
-        banca.saldo_referencia = ref - valor
-    elif multipla.resultado == ResultadoApostaEnum.CANCELADA:
-        banca.saldo_atual = float(banca.saldo_atual) - valor
-        banca.saldo_referencia = ref - valor
-
-    if novo == ResultadoApostaEnum.GANHA:
-        retorno = valor * odd
-        banca.saldo_atual = float(banca.saldo_atual) + retorno
-        banca.saldo_referencia = float(banca.saldo_referencia) + valor
-        multipla.lucro_prejuizo = retorno - valor
-        mov = TipoMovimentacaoEnum.LUCRO
-        mov_valor = retorno
-    elif novo == ResultadoApostaEnum.PERDIDA:
-        banca.saldo_referencia = float(banca.saldo_referencia) + valor
-        multipla.lucro_prejuizo = -valor
-        mov = TipoMovimentacaoEnum.PREJUIZO
-        mov_valor = valor
-    elif novo == ResultadoApostaEnum.CANCELADA:
-        banca.saldo_atual = float(banca.saldo_atual) + valor
-        banca.saldo_referencia = float(banca.saldo_referencia) + valor
-        multipla.lucro_prejuizo = 0
-        mov = TipoMovimentacaoEnum.DEPOSITO
-        mov_valor = valor
-    else:
-        multipla.lucro_prejuizo = None
-        mov = None
-        mov_valor = 0
-
-    multipla.resultado = novo
-    db.commit()
+    _liquidar_multipla(db, multipla, banca, novo)
     db.refresh(multipla)
     db.refresh(banca)
 
-    if mov is not None:
-        db.add(HistoricoBanca(
-            aposta_multipla_id=multipla.id,
-            usuario_id=multipla.usuario_id,
-            saldo=banca.saldo_atual,
-            valor=mov_valor,
-            tipo_movimentacao=mov,
-        ))
-        db.commit()
+    return {
+        "multipla": _serializar_multipla(multipla),
+        "banca": _serializar_banca(banca),
+        "flags": _status_banca(banca),
+    }
+
+
+@app.patch("/aposta-multipla/{multipla_id}/item/{item_id}/resultado")
+def resultado_item_multipla(multipla_id: int, item_id: int, dados: ResultadoApostaMultipla):
+    db = SessionLocal()
+
+    multipla = db.get(ApostaMultipla, multipla_id)
+    if not multipla:
+        raise HTTPException(status_code=404, detail="Aposta múltipla não encontrada")
+
+    item = db.get(ItemApostaMultipla, item_id)
+    if not item or item.multipla_id != multipla_id:
+        raise HTTPException(status_code=404, detail="Item não encontrado nesta múltipla")
+
+    banca = db.get(Banca, multipla.banca_id)
+    if not banca:
+        raise HTTPException(status_code=404, detail="Banca não encontrada")
+
+    try:
+        novo_item = ResultadoApostaEnum(dados.resultado.upper())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Resultado inválido")
+    if novo_item == ResultadoApostaEnum.CANCELADA:
+        raise HTTPException(status_code=400, detail="Para cancelar uma seleção, remova o item da múltipla")
+
+    item.resultado = novo_item
+    db.commit()
+    db.refresh(multipla)
+
+    novo_multipla = _derivar_resultado_multipla(multipla.itens)
+    _liquidar_multipla(db, multipla, banca, novo_multipla)
+    db.refresh(multipla)
+    db.refresh(banca)
 
     return {
         "multipla": _serializar_multipla(multipla),

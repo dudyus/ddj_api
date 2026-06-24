@@ -26,6 +26,23 @@ def migrar():
         else:
             print("OK Coluna aposta_multipla_id já existe em historico_banca")
 
+        resultado_item = conn.execute(text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'item_aposta_multipla'
+              AND column_name = 'resultado'
+        """)).fetchone()
+
+        if resultado_item is None:
+            conn.execute(text("""
+                ALTER TABLE item_aposta_multipla
+                ADD COLUMN resultado resultadoapostaenum NOT NULL DEFAULT 'PENDENTE'
+            """))
+            conn.commit()
+            print("OK Coluna resultado adicionada em item_aposta_multipla")
+        else:
+            print("OK Coluna resultado já existe em item_aposta_multipla")
+
     print("\nMigração concluída com sucesso.")
 
 

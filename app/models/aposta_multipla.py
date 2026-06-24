@@ -18,6 +18,12 @@ class ItemApostaMultipla(Base):
     tipo_aposta = Column(String(100), nullable=False)
     odd = Column(Numeric(10, 2), nullable=False)
 
+    resultado = Column(
+        Enum(ResultadoApostaEnum),
+        default=ResultadoApostaEnum.PENDENTE,
+        nullable=False,
+    )
+
     multipla = relationship("ApostaMultipla", back_populates="itens")
 
 
