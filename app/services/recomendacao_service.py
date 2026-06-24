@@ -51,9 +51,20 @@ def calcular_estatisticas(db) -> dict:
 _LIGA_GF_CASA = 1.55
 _LIGA_GF_FORA = 1.20
 
+_DESCONTO_SEM_HISTORICO = 0.6
+_ACRESCIMO_SEM_HISTORICO = 1.4
+
 
 def _media(soma, jogos, fallback):
     return soma / jogos if jogos > 0 else fallback
+
+
+def _media_ataque(soma, jogos, fallback):
+    return soma / jogos if jogos > 0 else fallback * _DESCONTO_SEM_HISTORICO
+
+
+def _media_defesa(soma, jogos, fallback):
+    return soma / jogos if jogos > 0 else fallback * _ACRESCIMO_SEM_HISTORICO
 
 
 def _selecionar_por_perfil(avaliadas: list[dict], perfil_risco: str | None) -> dict | None:
@@ -76,19 +87,20 @@ def recomendar(db, partida: Partida, perfil_risco: str | None = None) -> dict:
     nf = time_fora.nome if time_fora else "Fora"
 
     stats = calcular_estatisticas(db)
-    odds = buscar_odds(partida.id, nc, nf, partida.data)
 
     sc = stats.get(partida.time_casa_id, {})
     sf = stats.get(partida.time_fora_id, {})
 
-    casa_gf = _media(sc.get("casa_gf", 0), sc.get("casa_jogos", 0), _LIGA_GF_CASA)
-    fora_ga = _media(sf.get("fora_ga", 0), sf.get("fora_jogos", 0), _LIGA_GF_CASA)
-    fora_gf = _media(sf.get("fora_gf", 0), sf.get("fora_jogos", 0), _LIGA_GF_FORA)
-    casa_ga = _media(sc.get("casa_ga", 0), sc.get("casa_jogos", 0), _LIGA_GF_FORA)
+    casa_gf = _media_ataque(sc.get("casa_gf", 0), sc.get("casa_jogos", 0), _LIGA_GF_CASA)
+    fora_ga = _media_defesa(sf.get("fora_ga", 0), sf.get("fora_jogos", 0), _LIGA_GF_CASA)
+    fora_gf = _media_ataque(sf.get("fora_gf", 0), sf.get("fora_jogos", 0), _LIGA_GF_FORA)
+    casa_ga = _media_defesa(sc.get("casa_ga", 0), sc.get("casa_jogos", 0), _LIGA_GF_FORA)
 
     exp_casa = (casa_gf + fora_ga) / 2
     exp_fora = (fora_gf + casa_ga) / 2
     exp_total = exp_casa + exp_fora
+
+    odds = buscar_odds(partida.id, nc, nf, partida.data, exp_casa, exp_fora)
 
     diff = exp_casa - exp_fora
     p_casa = _clamp(0.40 + diff * 0.18, 0.08, 0.85)

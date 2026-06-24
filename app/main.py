@@ -33,7 +33,6 @@ from app.schemas.usuario import EditarNome, EditarEmail, AlterarSenha
 
 from app.services.football_data_service import buscar_partidas
 from app.services.importar_partidas_service import importar_partidas
-from app.services.odds_service import buscar_odds
 from app.services.recomendacao_service import recomendar
 
 app = FastAPI()
@@ -1018,18 +1017,15 @@ def odds_partida(partida_id: int):
     casa = db.get(Time, p.time_casa_id)
     fora = db.get(Time, p.time_fora_id)
 
+    rec = recomendar(db, p)
+
     return {
         "partida": _serializar_partida(
             p,
             casa.nome if casa else "Casa",
             fora.nome if fora else "Fora",
         ),
-        "odds": buscar_odds(
-            partida_id,
-            casa.nome if casa else "Casa",
-            fora.nome if fora else "Fora",
-            p.data,
-        ),
+        "odds": rec["odds"],
     }
 
 

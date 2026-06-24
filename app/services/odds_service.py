@@ -1,3 +1,4 @@
+import math
 import os
 import random
 import re
@@ -11,8 +12,6 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
-CASA_APOSTA_MOCK = "Betano"
-
 SPORT_KEY = "soccer_epl"
 
 BOOKMAKERS = ["betfair_sb_uk", "onexbet"]
@@ -21,28 +20,62 @@ BOOKMAKER_TITULO = {"betfair_sb_uk": "Betfair", "onexbet": "1xBet"}
 _CACHE_TTL_SEGUNDOS = 1800
 _cache: dict = {"indice": None, "buscado_em": 0.0}
 
+_OVERROUND = 1.06
+_EXP_CASA_PADRAO = 1.55
+_EXP_FORA_PADRAO = 1.20
 
-def _rng(partida_id: int) -> random.Random:
-    return random.Random(partida_id * 7919 + 13)
+
+def _rng(seed: str) -> random.Random:
+    return random.Random(seed)
 
 
-def gerar_odds_mock(partida_id: int) -> list[dict]:
-    r = _rng(partida_id)
+def _clamp(v, lo, hi):
+    return max(lo, min(hi, v))
 
-    odd_casa = round(r.uniform(1.55, 2.60), 2)
-    odd_empate = round(r.uniform(2.90, 3.60), 2)
-    odd_fora = round(r.uniform(2.40, 5.50), 2)
 
-    over_25 = round(r.uniform(1.65, 2.30), 2)
-    under_25 = round(r.uniform(1.55, 2.20), 2)
+def _odd_a_partir_da_prob(prob: float) -> float:
+    return round(1 / (prob * _OVERROUND), 2)
 
-    return [
-        {"tipo_aposta": "h2h_casa", "mercado": "h2h", "selecao": "Casa", "odd": odd_casa, "casa_aposta": CASA_APOSTA_MOCK},
-        {"tipo_aposta": "h2h_empate", "mercado": "h2h", "selecao": "Empate", "odd": odd_empate, "casa_aposta": CASA_APOSTA_MOCK},
-        {"tipo_aposta": "h2h_fora", "mercado": "h2h", "selecao": "Fora", "odd": odd_fora, "casa_aposta": CASA_APOSTA_MOCK},
-        {"tipo_aposta": "gols_over_2.5", "mercado": "gols", "selecao": "Mais de 2.5", "odd": over_25, "casa_aposta": CASA_APOSTA_MOCK, "ponto": 2.5},
-        {"tipo_aposta": "gols_under_2.5", "mercado": "gols", "selecao": "Menos de 2.5", "odd": under_25, "casa_aposta": CASA_APOSTA_MOCK, "ponto": 2.5},
-    ]
+
+def gerar_odds_mock(
+    partida_id: int,
+    exp_casa: float = _EXP_CASA_PADRAO,
+    exp_fora: float = _EXP_FORA_PADRAO,
+) -> list[dict]:
+    odds_geral = []
+
+    for chave_bm, titulo in BOOKMAKER_TITULO.items():
+        r = _rng(f"{partida_id}:{chave_bm}")
+        ruido = r.uniform(-0.04, 0.04)
+
+        diff = exp_casa - exp_fora
+        p_casa = _clamp(0.40 + diff * 0.18 + ruido, 0.05, 0.88)
+        p_fora = _clamp(0.30 - diff * 0.18 - ruido, 0.05, 0.88)
+        p_empate = _clamp(1 - p_casa - p_fora, 0.05, 0.45)
+        soma = p_casa + p_empate + p_fora
+        p_casa, p_empate, p_fora = p_casa / soma, p_empate / soma, p_fora / soma
+
+        exp_total = exp_casa + exp_fora + r.uniform(-0.15, 0.15)
+        p_over = _clamp(1 / (1 + math.exp(-(exp_total - 2.5) * 1.1)), 0.05, 0.95)
+        p_under = 1 - p_over
+
+        linha_casa = -_clamp(round(diff * 2) / 2, -3.0, 3.0)
+        linha_fora = -linha_casa
+        margem_necessaria = -linha_casa
+        p_casa_cobre = _clamp(1 / (1 + math.exp(-(diff + ruido - margem_necessaria) * 0.9)), 0.05, 0.95)
+        p_fora_cobre = 1 - p_casa_cobre
+
+        odds_geral += [
+            {"tipo_aposta": "h2h_casa", "mercado": "h2h", "selecao": "Casa", "odd": _odd_a_partir_da_prob(p_casa), "casa_aposta": titulo},
+            {"tipo_aposta": "h2h_empate", "mercado": "h2h", "selecao": "Empate", "odd": _odd_a_partir_da_prob(p_empate), "casa_aposta": titulo},
+            {"tipo_aposta": "h2h_fora", "mercado": "h2h", "selecao": "Fora", "odd": _odd_a_partir_da_prob(p_fora), "casa_aposta": titulo},
+            {"tipo_aposta": "gols_over_2.5", "mercado": "gols", "selecao": "Mais de 2.5", "odd": _odd_a_partir_da_prob(p_over), "casa_aposta": titulo, "ponto": 2.5},
+            {"tipo_aposta": "gols_under_2.5", "mercado": "gols", "selecao": "Menos de 2.5", "odd": _odd_a_partir_da_prob(p_under), "casa_aposta": titulo, "ponto": 2.5},
+            {"tipo_aposta": f"handicap_casa_{linha_casa:g}", "mercado": "handicap", "selecao": f"Casa ({linha_casa:+g})", "odd": _odd_a_partir_da_prob(p_casa_cobre), "casa_aposta": titulo, "ponto": linha_casa},
+            {"tipo_aposta": f"handicap_fora_{linha_fora:g}", "mercado": "handicap", "selecao": f"Fora ({linha_fora:+g})", "odd": _odd_a_partir_da_prob(p_fora_cobre), "casa_aposta": titulo, "ponto": linha_fora},
+        ]
+
+    return odds_geral
 
 
 def _normalizar_time(nome: str) -> str:
@@ -52,16 +85,17 @@ def _normalizar_time(nome: str) -> str:
     return n.strip()
 
 
-def _melhor_bookmaker_para_mercado(evento: dict, mercado_chave: str):
+def _bookmakers_para_mercado(evento: dict, mercado_chave: str):
     bookmakers_por_key = {b["key"]: b for b in evento["bookmakers"]}
+    encontrados = []
     for chave_bm in BOOKMAKERS:
         bookmaker = bookmakers_por_key.get(chave_bm)
         if not bookmaker:
             continue
         mercado = next((m for m in bookmaker["markets"] if m["key"] == mercado_chave), None)
         if mercado:
-            return bookmaker, mercado
-    return None, None
+            encontrados.append((bookmaker, mercado))
+    return encontrados
 
 
 def _montar_indice(eventos: list[dict]) -> dict[tuple[str, str], list[dict]]:
@@ -70,8 +104,7 @@ def _montar_indice(eventos: list[dict]) -> dict[tuple[str, str], list[dict]]:
     for evento in eventos:
         odds_evento = []
 
-        bookmaker_h2h, mercado_h2h = _melhor_bookmaker_para_mercado(evento, "h2h")
-        if bookmaker_h2h:
+        for bookmaker_h2h, mercado_h2h in _bookmakers_para_mercado(evento, "h2h"):
             titulo = BOOKMAKER_TITULO.get(bookmaker_h2h["key"], bookmaker_h2h["title"])
             for outcome in mercado_h2h["outcomes"]:
                 if outcome["name"] == evento["home_team"]:
@@ -88,8 +121,7 @@ def _montar_indice(eventos: list[dict]) -> dict[tuple[str, str], list[dict]]:
                     "casa_aposta": titulo,
                 })
 
-        bookmaker_gols, mercado_gols = _melhor_bookmaker_para_mercado(evento, "totals")
-        if bookmaker_gols:
+        for bookmaker_gols, mercado_gols in _bookmakers_para_mercado(evento, "totals"):
             titulo = BOOKMAKER_TITULO.get(bookmaker_gols["key"], bookmaker_gols["title"])
             for outcome in mercado_gols["outcomes"]:
                 ponto = outcome["point"]
@@ -98,6 +130,21 @@ def _montar_indice(eventos: list[dict]) -> dict[tuple[str, str], list[dict]]:
                     "tipo_aposta": f"gols_{lado}_{ponto:g}",
                     "mercado": "gols",
                     "selecao": f"{'Mais' if lado == 'over' else 'Menos'} de {ponto:g}",
+                    "odd": outcome["price"],
+                    "casa_aposta": titulo,
+                    "ponto": ponto,
+                })
+
+        for bookmaker_handicap, mercado_handicap in _bookmakers_para_mercado(evento, "spreads"):
+            titulo = BOOKMAKER_TITULO.get(bookmaker_handicap["key"], bookmaker_handicap["title"])
+            for outcome in mercado_handicap["outcomes"]:
+                ponto = outcome["point"]
+                lado = "casa" if outcome["name"] == evento["home_team"] else "fora"
+                rotulo = "Casa" if lado == "casa" else "Fora"
+                odds_evento.append({
+                    "tipo_aposta": f"handicap_{lado}_{ponto:g}",
+                    "mercado": "handicap",
+                    "selecao": f"{rotulo} ({ponto:+g})",
                     "odd": outcome["price"],
                     "casa_aposta": titulo,
                     "ponto": ponto,
@@ -124,7 +171,7 @@ def _buscar_indice_real() -> dict:
         params={
             "apiKey": api_key,
             "regions": "uk,eu",
-            "markets": "h2h,totals",
+            "markets": "h2h,totals,spreads",
             "bookmakers": ",".join(BOOKMAKERS),
         },
         timeout=10,
@@ -137,7 +184,14 @@ def _buscar_indice_real() -> dict:
     return indice
 
 
-def buscar_odds(partida_id: int, nome_casa: str, nome_fora: str, data: Optional[datetime] = None) -> list[dict]:
+def buscar_odds(
+    partida_id: int,
+    nome_casa: str,
+    nome_fora: str,
+    data: Optional[datetime] = None,
+    exp_casa: float = _EXP_CASA_PADRAO,
+    exp_fora: float = _EXP_FORA_PADRAO,
+) -> list[dict]:
     usar_mock = os.getenv("ODDS_API_MOCK", "true").lower() != "false"
 
     if not usar_mock:
@@ -149,4 +203,4 @@ def buscar_odds(partida_id: int, nome_casa: str, nome_fora: str, data: Optional[
         except requests.RequestException:
             pass
 
-    return gerar_odds_mock(partida_id)
+    return gerar_odds_mock(partida_id, exp_casa, exp_fora)
