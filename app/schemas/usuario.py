@@ -12,3 +12,7 @@ class EditarEmail(BaseModel):
 class AlterarSenha(BaseModel):
     senha_atual: str
     nova_senha: str
+
+
+class EditarFoto(BaseModel):
+    foto_perfil: str

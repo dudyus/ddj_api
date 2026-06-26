@@ -29,7 +29,7 @@ from app.models.enums import (
 from app.schemas.banca import CriarBanca, EditarBanca, MovimentarBanca
 from app.schemas.aposta import CriarAposta, ResultadoAposta
 from app.schemas.aposta_multipla import CriarApostaMultipla, ResultadoApostaMultipla
-from app.schemas.usuario import EditarNome, EditarEmail, AlterarSenha
+from app.schemas.usuario import EditarNome, EditarEmail, AlterarSenha, EditarFoto
 
 from app.services.football_data_service import buscar_partidas
 from app.services.importar_partidas_service import importar_partidas
@@ -124,6 +124,7 @@ def login(dados: Login):
             "id": usuario.id,
             "nome": usuario.nome,
             "email": usuario.email,
+            "foto_perfil": usuario.foto_perfil,
             "perfil_risco": (
                 usuario.perfil_risco.value
                 if usuario.perfil_risco
@@ -149,6 +150,7 @@ def editar_nome(usuario_id: int, dados: EditarNome):
         "id": usuario.id,
         "nome": usuario.nome,
         "email": usuario.email,
+        "foto_perfil": usuario.foto_perfil,
         "perfil_risco": usuario.perfil_risco.value if usuario.perfil_risco else None,
     }
 
@@ -175,6 +177,27 @@ def editar_email(usuario_id: int, dados: EditarEmail):
         "id": usuario.id,
         "nome": usuario.nome,
         "email": usuario.email,
+        "foto_perfil": usuario.foto_perfil,
+        "perfil_risco": usuario.perfil_risco.value if usuario.perfil_risco else None,
+    }
+
+
+@app.patch("/usuario/{usuario_id}/foto")
+def editar_foto(usuario_id: int, dados: EditarFoto):
+    db = SessionLocal()
+    usuario = db.get(Usuario, usuario_id)
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    if len(dados.foto_perfil) > 3_000_000:
+        raise HTTPException(status_code=400, detail="Imagem muito grande")
+    usuario.foto_perfil = dados.foto_perfil
+    db.commit()
+    db.refresh(usuario)
+    return {
+        "id": usuario.id,
+        "nome": usuario.nome,
+        "email": usuario.email,
+        "foto_perfil": usuario.foto_perfil,
         "perfil_risco": usuario.perfil_risco.value if usuario.perfil_risco else None,
     }
 
@@ -340,6 +363,7 @@ def calcular_resultado_anamnese(anamnese_id: int):
             "id": usuario.id,
             "nome": usuario.nome,
             "email": usuario.email,
+            "foto_perfil": usuario.foto_perfil,
             "perfil_risco": usuario.perfil_risco.value if usuario.perfil_risco else None,
         } if usuario else None,
     }

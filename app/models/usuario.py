@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Enum
+from sqlalchemy import Column, Integer, String, Text, Enum
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -13,6 +13,8 @@ class Usuario(Base):
     nome = Column(String(150), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     senha = Column(String(255), nullable=False)
+
+    foto_perfil = Column(Text, nullable=True)
 
     perfil_risco = Column(
         Enum(PerfilRiscoEnum),
