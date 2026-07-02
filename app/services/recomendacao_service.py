@@ -187,18 +187,17 @@ def _rotulo(m, nc, nf) -> str:
     return m.get("selecao", t)
 
 
-_PERFIL_TEXTO = {
-    "CONSERVADOR": " Selecionada por ter a maior probabilidade estimada pelo modelo, priorizando confiança no resultado sobre retorno, alinhada ao seu perfil conservador.",
-    "AGRESSIVO": " Selecionada por oferecer o maior valor esperado (prob × odd − 1) dentre as apostas com edge positivo, alinhada ao seu perfil agressivo.",
+_PERFIL_SUFIXO = {
+    "CONSERVADOR": "a mais segura do jogo",
+    "AGRESSIVO": "o melhor retorno esperado do jogo",
+    "MODERADO": "a maior vantagem sobre a casa",
 }
 
 
 def _justificar(m, exp_casa, exp_fora, nc, nf, perfil_risco: str | None = None) -> str:
-    edge_pct = round(m["edge"] * 100, 1)
-    prob_pct = round(m["prob_modelo"] * 100, 1)
-    base = (
-        f"Gols esperados {nc} {exp_casa:.2f} x {exp_fora:.2f} {nf}. "
-        f"Modelo estima {prob_pct}% para esta seleção contra odd {m['odd']:.2f} "
-        f"({m['casa_aposta']}), gerando {edge_pct}% de valor."
+    prob_pct = round(m["prob_modelo"] * 100)
+    sufixo = _PERFIL_SUFIXO.get(perfil_risco or "", "a de maior vantagem no jogo")
+    return (
+        f"O modelo estima {prob_pct}% de chance. "
+        f"Odd {m['odd']:.2f} na {m['casa_aposta']} — {sufixo}."
     )
-    return base + _PERFIL_TEXTO.get(perfil_risco or "", "")
