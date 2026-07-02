@@ -76,7 +76,8 @@ def _selecionar_por_perfil(avaliadas: list[dict], perfil_risco: str | None) -> d
     if perfil_risco == "CONSERVADOR":
         return max(pool, key=lambda a: a["prob_modelo"])
     if perfil_risco == "AGRESSIVO":
-        return max(pool, key=lambda a: a["prob_modelo"] * a["odd"] - 1)
+        candidates = [a for a in pool if a["prob_modelo"] >= 0.25]
+        return max(candidates or pool, key=lambda a: a["prob_modelo"] * a["odd"] - 1)
     return max(pool, key=lambda a: a["edge"])
 
 
