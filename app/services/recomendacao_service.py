@@ -74,9 +74,9 @@ def _selecionar_por_perfil(avaliadas: list[dict], perfil_risco: str | None) -> d
     pool = [a for a in avaliadas if a["edge"] > 0] or avaliadas
 
     if perfil_risco == "CONSERVADOR":
-        return min(pool, key=lambda a: a["odd"])
+        return max(pool, key=lambda a: a["prob_modelo"])
     if perfil_risco == "AGRESSIVO":
-        return max(pool, key=lambda a: a["odd"])
+        return max(pool, key=lambda a: a["prob_modelo"] * a["odd"] - 1)
     return max(pool, key=lambda a: a["edge"])
 
 
@@ -188,8 +188,8 @@ def _rotulo(m, nc, nf) -> str:
 
 
 _PERFIL_TEXTO = {
-    "CONSERVADOR": " Selecionada por ser a opção de maior probabilidade dentre as com valor, alinhada ao seu perfil conservador.",
-    "AGRESSIVO": " Selecionada por oferecer a maior odd dentre as opções com valor, alinhada ao seu perfil agressivo.",
+    "CONSERVADOR": " Selecionada por ter a maior probabilidade estimada pelo modelo, priorizando confiança no resultado sobre retorno, alinhada ao seu perfil conservador.",
+    "AGRESSIVO": " Selecionada por oferecer o maior valor esperado (prob × odd − 1) dentre as apostas com edge positivo, alinhada ao seu perfil agressivo.",
 }
 
 
